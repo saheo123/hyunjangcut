@@ -13,7 +13,7 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
-MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"] if m]
+MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"] if m]
 
 SCENES = {
     "phone_screen": "휴대폰 통화·녹음 화면",
@@ -117,12 +117,12 @@ def _call(client: genai.Client, system: str, content: list, schema: dict, max_to
         max_output_tokens=max_tokens,
         temperature=0.4,
     )
-    last_err: Exception | None = None
-    for model in MODELS:
+    errors: list[str] = []
+    for model in dict.fromkeys(MODELS):
         try:
             resp = client.models.generate_content(model=model, contents=content, config=cfg)
         except Exception as e:  # 모델 이름 없음(404) 등은 다음 모델로
-            last_err = e
+            errors.append(f"[{model}] {str(e)[:300]}")
             if "404" in str(e) or "not found" in str(e).lower():
                 continue
             if "API_KEY_INVALID" in str(e) or "API key not valid" in str(e):
@@ -134,7 +134,7 @@ def _call(client: genai.Client, system: str, content: list, schema: dict, max_to
         if not text.strip():
             raise RuntimeError("AI가 빈 응답을 보냈어요. 다시 시도해 주세요.")
         return json.loads(text)
-    raise RuntimeError(f"사용 가능한 Gemini 모델을 찾지 못했어요: {last_err}")
+    raise RuntimeError("사용 가능한 Gemini 모델을 찾지 못했어요. 모델별 응답: " + " / ".join(errors))
 
 
 def candidate_facts(facts: dict, product: str, industry: str) -> list[dict]:
