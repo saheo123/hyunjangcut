@@ -34,9 +34,10 @@ ANALYSIS_SCHEMA = {
     "properties": {
         "photos": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["file", "scene_tags", "pii"],
+            "required": ["file", "scene_tags", "visible_text", "pii"],
             "properties": {
                 "file": {"type": "string"},
+                "visible_text": {"type": "string"},
                 "scene_tags": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["tag", "label", "confidence"],
@@ -69,12 +70,16 @@ CONTENT_SCHEMA = {
 
 ANALYSIS_SYSTEM = """너는 티링크(녹취·CRM·인터넷전화 솔루션 기업)의 홍보 담당을 돕는 현장 사진 분석가다.
 - 각 사진을 정해진 장면 태그로 분류한다. 사진만으로 확실하지 않으면 confidence를 low로 둔다. 추측으로 high를 주지 않는다.
-- 사진 속 사람 얼굴, 고객 이름, 전화번호, 차량 번호처럼 게시하면 안 되는 정보가 보이면 pii에 위치와 「가림 처리 권고」를 적는다. 없으면 빈 배열.
+- 사진 속에서 읽을 수 있는 글자(화면 문구, 숫자, 전화번호, 이름 등)를 visible_text에 보이는 그대로 모두 적는다. 없으면 빈 문자열. 이 글자는 코드가 전화번호 패턴으로 한 번 더 검사한다.
+- 사진 속 사람 얼굴, 고객 이름, 전화번호, 차량 번호처럼 게시하면 안 되는 정보가 보이면 pii에 「어느 위치에 무엇이 보이는지(노출 글자 일부 포함)」와 「가림 처리 권고」를 적는다. 없으면 빈 배열.
 - 제공된 팩트시트에서 사진 장면·업종·제품과 가장 잘 맞는 기술적 차별점 3개를 fact_id로 고르고, 왜 이 사진과 연결되는지 한 문장으로 쓴다. 팩트시트에 없는 ID는 쓰지 않는다."""
 
 CONTENT_SYSTEM = """너는 티링크 비즈레코딩 홍보 콘텐츠 작성자다. 아래 규칙을 반드시 지킨다.
 [사실 규칙]
 - 제품 설명과 숫자는 제공된 팩트시트 문장에 있는 것만 쓴다. 팩트시트에 없는 효과 수치(예: 몇 % 절감), 고객사 이름, 기능은 만들지 않는다.
+- 제품 기능·숫자·실적을 말하는 문장은 마침표 바로 뒤에 근거 팩트 번호를 〔F05〕처럼 붙인다. 여러 개면 〔F05〕〔F07〕.
+- 가이드라인이 요구해서 쓴 문장(사용 후기 경험, 결론 문장 등)은 〔G〕를 붙인다.
+- 근거 번호가 없는 문장에는 제품 기능을 쓰지 않는다. 근거 번호는 게시 전에 자동으로 지워진다.
 - 사용한 팩트 ID를 used_fact_ids에 모두 적는다.
 - 개인 전화번호, 사람 이름은 쓰지 않는다. 연락처는 가이드라인 하단 정보만 쓴다.
 [블로그 원고 blog]
@@ -87,7 +92,9 @@ CONTENT_SYSTEM = """너는 티링크 비즈레코딩 홍보 콘텐츠 작성자�
 - 그 뒤에 가이드라인 하단 정보(홈페이지, 블로그, 상담 문의)를 그대로 넣고, 마지막 줄에 태그를 넣는다.
 - 문단 사이는 빈 줄로 구분한다.
 [카드뉴스 cards] 정확히 4개. 각 40자 안팎. 1컷 문제 제기, 2~3컷 사진과 연결된 차별점, 4컷 행동 유도.
-[문자 sms] SMS 90byte(한글 45자) 이하. [티링크]로 시작."""
+[문자 sms] 근거 번호를 뺀 본문이 SMS 90byte(한글 45자) 이하. [티링크]로 시작."""
+
+PLAIN_SYSTEM = """너는 마케팅 카피라이터다. 제공된 제품 자료와 가이드라인을 참고해 네이버 블로그 원고(첫 줄 제목), 인스타 카드뉴스 4컷 문구, 고객 문자 문구를 써라. used_fact_ids는 빈 배열로 둔다."""
 
 
 def make_client(api_key: str) -> genai.Client:
@@ -148,6 +155,19 @@ def analyze(client, photos: list[tuple[str, bytes]], product: str, industry: str
     return _call(client, ANALYSIS_SYSTEM, content, ANALYSIS_SCHEMA, 4000)
 
 
+def _scenes_only(analysis: dict) -> list[dict]:
+    """사진 속 글자(개인정보 가능)는 생성 단계로 넘기지 않는다."""
+    return [{"file": p["file"], "scene_tags": p["scene_tags"]} for p in analysis.get("photos", [])]
+
+
+def generate_plain(client, analysis: dict, product: str, industry: str, facts: dict, guide: dict) -> dict:
+    """비교 실험용: 규칙·근거 번호 없이 같은 자료만 주는 일반 프롬프트."""
+    text = (f"제품: {product}\n고객 업종: {industry}\n사진 분석 결과: {json.dumps(_scenes_only(analysis), ensure_ascii=False)}\n"
+            f"제품 자료: {json.dumps([f['text'] for f in facts['facts']], ensure_ascii=False)}\n"
+            f"가이드라인: {json.dumps(guide, ensure_ascii=False)}")
+    return _call(client, PLAIN_SYSTEM, [text], CONTENT_SCHEMA, 8192)
+
+
 def generate(client, analysis: dict, product: str, industry: str, facts: dict, guide: dict,
              feedback: list[str] | None = None) -> dict:
     by_id = {f["id"]: f for f in facts["facts"]}
@@ -155,7 +175,7 @@ def generate(client, analysis: dict, product: str, industry: str, facts: dict, g
     cands = candidate_facts(facts, product, industry)
     text = (
         f"제품: {product}\n고객 업종: {industry}\n"
-        f"사진 분석 결과: {json.dumps(analysis['photos'], ensure_ascii=False)}\n"
+        f"사진 분석 결과: {json.dumps(_scenes_only(analysis), ensure_ascii=False)}\n"
         f"사진과 매칭된 핵심 차별점(반드시 강조): {json.dumps([by_id[i] for i in matched], ensure_ascii=False)}\n"
         f"사용 가능한 팩트시트 전체: {json.dumps([{'id': f['id'], 'text': f['text']} for f in cands], ensure_ascii=False)}\n"
         f"가이드라인: {json.dumps(guide, ensure_ascii=False)}"
