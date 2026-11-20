@@ -21,7 +21,11 @@ PHONE_RE = re.compile(r"(?<!\d)0\d{1,2}[-\s.]?\d{3,4}[-\s.]?\d{4}(?!\d)|(?<!\d)1
 
 
 def load_json(name: str) -> dict:
-    return json.loads((DATA / name).read_text(encoding="utf-8"))
+    """data/ 폴더에 없으면 앱 폴더 바로 아래에서도 찾는다 (웹 업로드로 폴더가 빠졌을 때 대비)."""
+    for p in (DATA / name, DATA.parent / name):
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    raise FileNotFoundError(f"{name} 파일이 없습니다. GitHub 저장소에 data 폴더 또는 {name}을 올려 주세요.")
 
 
 def clean(text: str) -> str:
